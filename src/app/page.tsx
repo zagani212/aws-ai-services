@@ -58,6 +58,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [activeService, setActiveService] = useState<"advisor" | "safety">("advisor");
 
   const fileMeta = useMemo(() => {
     if (!file) return null;
@@ -90,15 +91,26 @@ export default function HomePage() {
       entities?: Array<{ text?: string; type?: string }>;
     };
 
+    type Safety = {
+      flagged?: boolean;
+      severity?: "LOW" | "MEDIUM" | "HIGH";
+      message?: string;
+    };
+
     const adviceParsed = tryParseJson<Advice>(result?.bedrock?.advice) ?? (typeof result?.bedrock?.advice === "object" ? (result.bedrock.advice as Advice) : null);
     const textParsed =
       tryParseJson<TextSignals>(result?.textSignals) ??
       (typeof result?.textSignals === "object" ? (result.textSignals as TextSignals) : null);
 
+    const safetyParsed =
+      tryParseJson<Safety>(result?.safety) ??
+      (typeof result?.safety === "object" ? (result.safety as Safety) : null);
+
     return {
       s3: result?.s3 as { bucket?: string; key?: string } | undefined,
       rekognitionLabels: (result?.rekognition?.labels ?? []) as Array<{ name?: string; confidence?: number; parents?: string[] }>,
       textSignals: textParsed,
+      safety: safetyParsed,
       advice: adviceParsed,
       rawAdvice: result?.bedrock?.advice as unknown,
       rawTextSignals: result?.textSignals as unknown
@@ -154,7 +166,7 @@ export default function HomePage() {
       setError(validationError);
       return;
     }
-    if (!comment.trim()) {
+    if (activeService === "advisor" && !comment.trim()) {
       setError("Please add a short comment about the product.");
       return;
     }
@@ -163,7 +175,8 @@ export default function HomePage() {
     try {
       const fd = new FormData();
       fd.set("image", file);
-      fd.set("comment", comment.trim());
+      fd.set("service", activeService);
+      if (activeService === "advisor") fd.set("comment", comment.trim());
 
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const data = await res.json().catch(() => null);
@@ -183,13 +196,58 @@ export default function HomePage() {
     <main className="container">
       <div className="row">
         <section className="card">
-          <h1 className="title">AI Product Advisor</h1>
+          <h1 className="title">{activeService === "advisor" ? "Business Advisor" : "Safety Scan"}</h1>
           <p className="subtitle">
-            Upload a product image + a short comment. The backend uploads the image to S3, analyzes the image with Rekognition (via a presigned URL),
-            analyzes the text with Comprehend, then asks Bedrock for business advice.
+            {activeService === "advisor"
+              ? "Upload a product image + a short comment. We’ll analyze image + text and return business advice."
+              : "Upload a product image. We’ll scan for potentially unsafe content and explain why it was flagged."}
           </p>
 
           <div className="pill">Max size: 5MB • Allowed: JPG / PNG / WEBP</div>
+
+          <label className="label">Service</label>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveService("advisor");
+                setResult(null);
+                setError(null);
+              }}
+              className="button"
+              style={{
+                marginTop: 0,
+                width: "auto",
+                flex: 1,
+                padding: "10px 12px",
+                background: activeService === "advisor" ? "linear-gradient(180deg, rgba(124, 58, 237, 0.95), rgba(124, 58, 237, 0.65))" : "rgba(0,0,0,0.18)",
+                border: "1px solid rgba(255,255,255,0.16)",
+                fontWeight: 800
+              }}
+            >
+              Business advisor
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveService("safety");
+                setResult(null);
+                setError(null);
+              }}
+              className="button"
+              style={{
+                marginTop: 0,
+                width: "auto",
+                flex: 1,
+                padding: "10px 12px",
+                background: activeService === "safety" ? "linear-gradient(180deg, rgba(124, 58, 237, 0.95), rgba(124, 58, 237, 0.65))" : "rgba(0,0,0,0.18)",
+                border: "1px solid rgba(255,255,255,0.16)",
+                fontWeight: 800
+              }}
+            >
+              Safety scan
+            </button>
+          </div>
 
           <label className="label" htmlFor="image">
             Product image
@@ -224,11 +282,25 @@ export default function HomePage() {
             />
           ) : null}
 
-          <label className="label" htmlFor="comment">
-            Comment (what should we know about this product?)
-          </label>
-          <textarea id="comment" className="textarea" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Example: eco-friendly bamboo phone case for iPhone 15, target price $19.99..." />
-          <p className="hint">Tip: include target customer, price point, differentiators, and any constraints.</p>
+          {activeService === "advisor" ? (
+            <>
+              <label className="label" htmlFor="comment">
+                Comment (what should we know about this product?)
+              </label>
+              <textarea
+                id="comment"
+                className="textarea"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                placeholder="Example: eco-friendly bamboo phone case for iPhone 15, target price $19.99..."
+              />
+              <p className="hint">Tip: include target customer, price point, differentiators, and any constraints.</p>
+            </>
+          ) : (
+            <p className="hint" style={{ marginTop: 14 }}>
+              No comment needed for safety scan.
+            </p>
+          )}
 
           {error ? (
             <div style={{ marginTop: 12 }} className="error">
@@ -237,7 +309,7 @@ export default function HomePage() {
           ) : null}
 
           <button className="button" onClick={onSubmit} disabled={isSubmitting}>
-            {isSubmitting ? "Analyzing…" : "Upload & get advice"}
+            {isSubmitting ? "Analyzing…" : activeService === "advisor" ? "Upload & get advice" : "Upload & scan"}
           </button>
         </section>
 
@@ -246,42 +318,84 @@ export default function HomePage() {
             Result
           </h2>
           <p className="subtitle" style={{ fontSize: 14, marginBottom: 12 }}>
-            A short summary of your comment + business advice.
+            {activeService === "advisor" ? "Business advisor output." : "Safety scan output."}
           </p>
+
           {pretty ? (
             <div className="card" style={{ padding: 14 }}>
-              <SectionTitle>Comment summary</SectionTitle>
-              <div style={{ color: "rgba(255,255,255,0.88)", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
-                {pretty.textSignals?.sentiment?.label
-                  ? `Sentiment: ${pretty.textSignals.sentiment.label}${
-                      typeof pretty.textSignals.sentiment.confidence === "number"
-                        ? ` (~${Math.round(pretty.textSignals.sentiment.confidence * 100)}%)`
-                        : ""
-                    }\n`
-                  : ""}
-                {pretty.textSignals?.key_phrases?.length ? `Key phrases: ${pretty.textSignals.key_phrases.join(", ")}\n` : ""}
-                {pretty.textSignals?.entities?.length
-                  ? `Entities: ${pretty.textSignals.entities
-                      .map((e: { text?: string; type?: string }) => [e.text, e.type].filter(Boolean).join(" (") + (e.type ? ")" : ""))
-                      .join(", ")}\n`
-                  : ""}
-                {!pretty.textSignals ? "—" : ""}
-              </div>
+              {activeService === "advisor" ? (
+                <div
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 14,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.18)"
+                  }}
+                >
+                  <SectionTitle>Client comment summary</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.88)", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+                    {pretty.textSignals?.sentiment?.label
+                      ? `Sentiment: ${pretty.textSignals.sentiment.label}${
+                          typeof pretty.textSignals.sentiment.confidence === "number"
+                            ? ` (~${Math.round(pretty.textSignals.sentiment.confidence * 100)}%)`
+                            : ""
+                        }\n`
+                      : ""}
+                    {pretty.textSignals?.key_phrases?.length ? `Key phrases: ${pretty.textSignals.key_phrases.join(", ")}\n` : ""}
+                    {pretty.textSignals?.entities?.length
+                      ? `Entities: ${pretty.textSignals.entities
+                          .map((e: { text?: string; type?: string }) => [e.text, e.type].filter(Boolean).join(" (") + (e.type ? ")" : ""))
+                          .join(", ")}\n`
+                      : ""}
+                    {!pretty.textSignals ? "—\n" : ""}
+                  </div>
 
-              <SectionTitle>Business advice</SectionTitle>
-              {pretty.advice ? (
-                <div style={{ fontSize: 13, lineHeight: 1.55 }}>
-                  <div style={{ color: "rgba(255,255,255,0.92)" }}>
-                    <b>Advice:</b> {pretty.advice.product_summary || "—"}
-                  </div>
-                  <div style={{ marginTop: 10 }}>
-                    <b>Next steps:</b>
-                    <BulletList items={(pretty.advice.next_steps ?? []).slice(0, 4)} />
-                  </div>
+                  <SectionTitle>Business advice</SectionTitle>
+                  {pretty.advice ? (
+                    <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+                      <div style={{ color: "rgba(255,255,255,0.92)" }}>
+                        <b>Advice:</b> {pretty.advice.product_summary || "—"}
+                      </div>
+                      <div style={{ marginTop: 10 }}>
+                        <b>Next steps:</b>
+                        <BulletList items={(pretty.advice.next_steps ?? []).slice(0, 4)} />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="resultBox">
+                      {typeof pretty.rawAdvice === "string" ? stripCodeFences(pretty.rawAdvice) : JSON.stringify(pretty.rawAdvice, null, 2)}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="resultBox">
-                  {typeof pretty.rawAdvice === "string" ? stripCodeFences(pretty.rawAdvice) : JSON.stringify(pretty.rawAdvice, null, 2)}
+                <div
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 14,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.18)"
+                  }}
+                >
+                  <SectionTitle>Unsafe content detection</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.88)", fontSize: 13, lineHeight: 1.55 }}>
+                    {pretty.safety ? (
+                      <>
+                        <div>
+                          <b>Status:</b>{" "}
+                          {pretty.safety.flagged ? (
+                            <span style={{ color: "rgba(254,202,202,1)" }}>Flagged ({pretty.safety.severity || "—"})</span>
+                          ) : (
+                            <span style={{ color: "rgba(187,247,208,1)" }}>Not flagged</span>
+                          )}
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                          <b>Explanation:</b> {pretty.safety.message || "—"}
+                        </div>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -293,8 +407,40 @@ export default function HomePage() {
               </details>
             </div>
           ) : (
-            <div className="card resultBox" style={{ padding: 14 }}>
-              No result yet.
+            <div className="card" style={{ padding: 14 }}>
+              {activeService === "advisor" ? (
+                <div
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 14,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.18)"
+                  }}
+                >
+                  <SectionTitle>Client comment summary</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.55 }}>
+                    Upload an image + comment to see a short summary here.
+                  </div>
+                  <SectionTitle>Business advice</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.55 }}>
+                    We’ll generate business advice after analysis.
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 14,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.18)"
+                  }}
+                >
+                  <SectionTitle>Unsafe content detection</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.55 }}>
+                    Upload an image to run a safety scan. We’ll flag potentially unsafe content and explain why.
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </aside>

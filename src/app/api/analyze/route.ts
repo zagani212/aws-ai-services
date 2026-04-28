@@ -1,5 +1,5 @@
 import { InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
-import { DetectLabelsCommand } from "@aws-sdk/client-rekognition";
+import { DetectLabelsCommand, DetectModerationLabelsCommand } from "@aws-sdk/client-rekognition";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { bedrock, rekognition, s3 } from "@/lib/aws";
@@ -56,9 +56,12 @@ export async function POST(req: Request) {
   }
 
   const fd = await req.formData();
+  const serviceRaw = fd.get("service");
+  const service = serviceRaw === "safety" || serviceRaw === "advisor" ? serviceRaw : "advisor";
+
   const commentRaw = fd.get("comment");
   const comment = typeof commentRaw === "string" ? commentRaw.trim() : "";
-  if (!comment) return jsonError("Missing comment.");
+  if (service === "advisor" && !comment) return jsonError("Missing comment.");
 
   const image = await readFileFromFormData(fd, "image");
   if (!image) return jsonError("Missing image file.");
@@ -86,7 +89,7 @@ export async function POST(req: Request) {
       Body: bytes,
       ContentType: image.type,
       Metadata: {
-        comment
+        ...(comment ? { comment } : {})
       }
     })
   );
@@ -110,6 +113,13 @@ export async function POST(req: Request) {
     })
   );
 
+  const moderationResp = await rekognition.send(
+    new DetectModerationLabelsCommand({
+      Image: { S3Object: { Bucket: bucket, Name: objectKey } },
+      MinConfidence: 60
+    })
+  );
+
   const labelItems = (labelsResp.Labels ?? []) as Array<{
     Name?: string;
     Confidence?: number;
@@ -122,7 +132,71 @@ export async function POST(req: Request) {
     parents: (l.Parents ?? []).map((p) => p.Name ?? "").filter(Boolean)
   }));
 
-  // Bedrock (instead of Comprehend): analyze the user's comment.
+  const moderationItems = (moderationResp.ModerationLabels ?? []) as Array<{
+    Name?: string;
+    ParentName?: string;
+    Confidence?: number;
+  }>;
+
+  const moderationLabels = moderationItems.map((m) => ({
+    name: m.Name ?? "",
+    parentName: m.ParentName ?? "",
+    confidence: m.Confidence ?? 0
+  }));
+
+  // Bedrock: explain safety concerns based on Rekognition moderation labels.
+  const safetyPrompt = `You are a content safety assistant for an e-commerce app.
+
+Given the moderation labels detected in an image, decide if it should be flagged.
+
+Return STRICT JSON:
+{
+  "flagged": boolean,
+  "severity": "LOW"|"MEDIUM"|"HIGH",
+  "message": string
+}
+
+Rules:
+- If labels indicate violence/weapons, explicit nudity, sexual content, self-harm, drugs, hate symbols, or graphic content => flagged=true.
+- The message must be short and actionable, like:
+  "This image may contain violence due to detected weapons. Consider restricting visibility."
+
+Moderation labels JSON:
+${JSON.stringify(moderationLabels, null, 2)}
+`;
+
+  const safetyBody = JSON.stringify({
+    anthropic_version: "bedrock-2023-05-31",
+    max_tokens: 220,
+    temperature: 0,
+    messages: [{ role: "user", content: [{ type: "text", text: safetyPrompt }] }]
+  });
+
+  const safetyInvoke = await bedrock.send(
+    new InvokeModelCommand({
+      modelId,
+      contentType: "application/json",
+      accept: "application/json",
+      body: safetyBody
+    })
+  );
+
+  const safetyRaw = new TextDecoder().decode(safetyInvoke.body);
+  const safetyParsed = safeJson<any>(safetyRaw);
+  const safetyText = extractFirstTextFromBedrockResponse(safetyParsed);
+  const safetyJson = safetyText ? safeJson<any>(safetyText) : null;
+
+  if (service === "safety") {
+    return Response.json({
+      service,
+      s3: { bucket, key: objectKey },
+      presignedGetUrlExpiresInSeconds: 600,
+      moderation: { labels: moderationLabels },
+      safety: safetyJson ?? safetyText ?? safetyParsed
+    });
+  }
+
+  // Advisor service: Bedrock extracts text signals from the user's comment.
   const textSignalsPrompt = `Extract structured NLP signals from the following product comment.
 
 Return STRICT JSON:
@@ -167,6 +241,7 @@ ${JSON.stringify(comment)}
       s3: { bucket, key: objectKey }
     },
     rekognition: { labels },
+    rekognition_moderation: moderationLabels,
     bedrock_text_signals: textSignals ?? textSignalsText ?? textSignalsParsed
   };
 
@@ -211,9 +286,12 @@ ${JSON.stringify(bedrockInput, null, 2)}
   const adviceJson = modelText ? safeJson<any>(modelText) : null;
 
   return Response.json({
+    service,
     s3: { bucket, key: objectKey },
     presignedGetUrlExpiresInSeconds: 600,
     rekognition: { labels },
+    moderation: { labels: moderationLabels },
+    safety: safetyJson ?? safetyText ?? safetyParsed,
     textSignals: textSignals ?? textSignalsText ?? textSignalsParsed,
     bedrock: {
       modelId,
