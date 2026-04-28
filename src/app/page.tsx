@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const MAX_BYTES = 5 * 1024 * 1024; // 5MB
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -58,7 +58,18 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<any>(null);
-  const [activeService, setActiveService] = useState<"advisor" | "safety">("advisor");
+  const [activeService, setActiveService] = useState<"advisor" | "safety" | "visual">("advisor");
+  const [chatContext, setChatContext] = useState<any>(null);
+  const [chatHistory, setChatHistory] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isChatSending, setIsChatSending] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!chatBottomRef.current) return;
+    chatBottomRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatHistory.length, activeService]);
 
   const fileMeta = useMemo(() => {
     if (!file) return null;
@@ -151,6 +162,8 @@ export default function HomePage() {
     setFile(next);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(next ? URL.createObjectURL(next) : null);
+    setChatContext(null);
+    setChatHistory([]);
   }
 
   async function onSubmit() {
@@ -173,18 +186,30 @@ export default function HomePage() {
 
     setIsSubmitting(true);
     try {
+      if (activeService === "visual") {
+        setChatContext(null);
+        setChatHistory([]);
+      }
+
       const fd = new FormData();
       fd.set("image", file);
-      fd.set("service", activeService);
+
+      const endpoint = activeService === "visual" ? "/api/visual/start" : "/api/analyze";
+      if (activeService !== "visual") fd.set("service", activeService);
       if (activeService === "advisor") fd.set("comment", comment.trim());
 
-      const res = await fetch("/api/analyze", { method: "POST", body: fd });
+      const res = await fetch(endpoint, { method: "POST", body: fd });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(data?.error || `Request failed with status ${res.status}.`);
         return;
       }
       setResult(data);
+
+      if (activeService === "visual") {
+        setChatContext(data?.context ?? null);
+        setChatHistory([]);
+      }
     } catch (e: any) {
       setError(e?.message || "Unexpected error.");
     } finally {
@@ -192,15 +217,54 @@ export default function HomePage() {
     }
   }
 
+  async function sendChat() {
+    setError(null);
+    const q = chatInput.trim();
+    if (!q) return;
+    if (!chatContext) {
+      setError("Upload an image first to start a visual chat.");
+      return;
+    }
+    if (isSubmitting) return;
+    if (isChatSending) return;
+
+    setChatInput("");
+    const nextHistory = [...chatHistory, { role: "user" as const, text: q }];
+    setChatHistory(nextHistory);
+
+    try {
+      setIsChatSending(true);
+      const res = await fetch("/api/visual/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: q, context: chatContext, history: nextHistory })
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(data?.error || `Chat request failed with status ${res.status}.`);
+        return;
+      }
+      setChatHistory((h: Array<{ role: "user" | "assistant"; text: string }>) => [...h, { role: "assistant", text: data?.answer ?? "" }]);
+    } catch (e: any) {
+      setError(e?.message || "Unexpected error.");
+    } finally {
+      setIsChatSending(false);
+    }
+  }
+
   return (
     <main className="container">
       <div className="row">
         <section className="card">
-          <h1 className="title">{activeService === "advisor" ? "Business Advisor" : "Safety Scan"}</h1>
+          <h1 className="title">
+            {activeService === "advisor" ? "Business Advisor" : activeService === "safety" ? "Safety Scan" : "Visual Search + Chat"}
+          </h1>
           <p className="subtitle">
             {activeService === "advisor"
               ? "Upload a product image + a short comment. We’ll analyze image + text and return business advice."
-              : "Upload a product image. We’ll scan for potentially unsafe content and explain why it was flagged."}
+              : activeService === "safety"
+                ? "Upload a product image. We’ll scan for potentially unsafe content and explain why it was flagged."
+                : "Upload an image once, then chat about what’s happening in it (grounded on Rekognition signals)."}
           </p>
 
           <div className="pill">Max size: 5MB • Allowed: JPG / PNG / WEBP</div>
@@ -233,6 +297,8 @@ export default function HomePage() {
                 setActiveService("safety");
                 setResult(null);
                 setError(null);
+                setChatContext(null);
+                setChatHistory([]);
               }}
               className="button"
               style={{
@@ -246,6 +312,28 @@ export default function HomePage() {
               }}
             >
               Safety scan
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveService("visual");
+                setResult(null);
+                setError(null);
+                setChatContext(null);
+                setChatHistory([]);
+              }}
+              className="button"
+              style={{
+                marginTop: 0,
+                width: "auto",
+                flex: 1,
+                padding: "10px 12px",
+                background: activeService === "visual" ? "linear-gradient(180deg, rgba(124, 58, 237, 0.95), rgba(124, 58, 237, 0.65))" : "rgba(0,0,0,0.18)",
+                border: "1px solid rgba(255,255,255,0.16)",
+                fontWeight: 800
+              }}
+            >
+              Visual chat
             </button>
           </div>
 
@@ -298,7 +386,7 @@ export default function HomePage() {
             </>
           ) : (
             <p className="hint" style={{ marginTop: 14 }}>
-              No comment needed for safety scan.
+              {activeService === "safety" ? "No comment needed for safety scan." : "No comment needed. Upload an image to start chatting."}
             </p>
           )}
 
@@ -309,7 +397,13 @@ export default function HomePage() {
           ) : null}
 
           <button className="button" onClick={onSubmit} disabled={isSubmitting}>
-            {isSubmitting ? "Analyzing…" : activeService === "advisor" ? "Upload & get advice" : "Upload & scan"}
+            {isSubmitting
+              ? "Analyzing…"
+              : activeService === "advisor"
+                ? "Upload & get advice"
+                : activeService === "safety"
+                  ? "Upload & scan"
+                  : "Upload & start chat"}
           </button>
         </section>
 
@@ -318,10 +412,78 @@ export default function HomePage() {
             Result
           </h2>
           <p className="subtitle" style={{ fontSize: 14, marginBottom: 12 }}>
-            {activeService === "advisor" ? "Business advisor output." : "Safety scan output."}
+            {activeService === "advisor"
+              ? "Business advisor output."
+              : activeService === "safety"
+                ? "Safety scan output."
+                : "Chat about the uploaded image."}
           </p>
 
-          {pretty ? (
+          {activeService === "visual" ? (
+            <div className="card" style={{ padding: 14 }}>
+              <div
+                style={{
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 14,
+                  padding: 12,
+                  background: "rgba(0,0,0,0.18)"
+                }}
+              >
+                <SectionTitle>Chat</SectionTitle>
+                <div ref={chatScrollRef} className="card" style={{ padding: 12, maxHeight: 260, overflow: "auto" }}>
+                  {chatContext ? (
+                    chatHistory.length ? (
+                      chatHistory.map((m: { role: "user" | "assistant"; text: string }, idx: number) => (
+                        <div key={idx} style={{ marginBottom: 10, color: "rgba(255,255,255,0.9)" }}>
+                          <b>{m.role === "user" ? "You" : "AI"}:</b> {m.text}
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ color: "rgba(255,255,255,0.7)" }}>
+                        Ask something like “What’s happening here?” or “What objects do you see?”
+                      </div>
+                    )
+                  ) : (
+                    <div style={{ color: "rgba(255,255,255,0.7)" }}>Upload an image to start.</div>
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                  <input
+                    className="input"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="Type a question…"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") sendChat();
+                    }}
+                    disabled={!chatContext || isSubmitting || isChatSending}
+                  />
+                  <button
+                    className="button"
+                    style={{ width: "auto", marginTop: 0 }}
+                    onClick={sendChat}
+                    disabled={!chatContext || isSubmitting || isChatSending}
+                  >
+                    {isChatSending ? "Sending…" : "Send"}
+                  </button>
+                </div>
+                {!chatContext ? (
+                  <div className="hint" style={{ marginTop: 10 }}>
+                    {isSubmitting ? "Analyzing image… chat will unlock when ready." : "Upload an image to start the chat."}
+                  </div>
+                ) : null}
+
+                <details style={{ marginTop: 12 }}>
+                  <summary style={{ cursor: "pointer", color: "rgba(255,255,255,0.75)" }}>Show image signals</summary>
+                  <div className="card resultBox" style={{ padding: 12, marginTop: 10 }}>
+                    {JSON.stringify(chatContext, null, 2)}
+                  </div>
+                </details>
+              </div>
+            </div>
+          ) : pretty ? (
             <div className="card" style={{ padding: 14 }}>
               {activeService === "advisor" ? (
                 <div
@@ -408,7 +570,21 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="card" style={{ padding: 14 }}>
-              {activeService === "advisor" ? (
+              {activeService === "visual" ? (
+                <div
+                  style={{
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 14,
+                    padding: 12,
+                    background: "rgba(0,0,0,0.18)"
+                  }}
+                >
+                  <SectionTitle>Chat</SectionTitle>
+                  <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.55 }}>
+                    Upload an image to initialize context, then ask questions about it.
+                  </div>
+                </div>
+              ) : activeService === "advisor" ? (
                 <div
                   style={{
                     border: "1px solid rgba(255,255,255,0.14)",

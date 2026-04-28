@@ -42,7 +42,7 @@ a {
 }
 
 .container {
-  max-width: 980px;
+  max-width: 1440px;
   margin: 0 auto;
   padding: 40px 20px;
 }
@@ -63,7 +63,7 @@ a {
 
 @media (min-width: 860px) {
   .row {
-    grid-template-columns: 1.1fr 0.9fr;
+    grid-template-columns: 1.05fr 0.95fr;
     align-items: start;
   }
 }

@@ -1,13 +1,38 @@
 # AI Product Advisor
 
-A small full-stack Next.js app that:
+Three AWS-powered services in one small Next.js app:
 
-- Lets a user upload a **product image** and a **comment** (frontend validates size + format)
-- Uploads the image to **S3**
-- Generates a **presigned GET URL** for the uploaded image
-- Sends the image to **Amazon Rekognition** via the **S3 object reference** (bucket + key)
-- Uses **Amazon Bedrock** to extract text signals from the comment (sentiment / entities / key phrases)
-- Sends the combined signals to **Amazon Bedrock** to generate business advice
+## Services
+
+### 1) Business advisor
+
+- Upload **image + comment**
+- **S3** stores image
+- **Rekognition** detects labels (objects/scenes)
+- **Bedrock** extracts text signals from the comment (sentiment / entities / key phrases)
+- **Bedrock** generates business advice (product summary + next steps)
+
+### 2) Safety scan
+
+- Upload **image only**
+- **S3** stores image
+- **Rekognition** detects **moderation labels**
+- **Bedrock** converts those labels into a short, actionable message, e.g.  
+  “This image may contain violence due to detected weapons. Consider restricting visibility.”
+
+### 3) Visual search + chat
+
+- Upload **image once**
+- **Rekognition** detects labels (and moderation labels)
+- Then you can **chat** about the image; each user question is sent to **Bedrock** with the Rekognition signals as context
+
+## UI
+
+Open `http://localhost:3000` and select a service from the **left panel**:
+
+- **Business advisor**
+- **Safety scan**
+- **Visual chat**
 
 ## Setup
 
@@ -34,6 +59,7 @@ The runtime principal (env creds, AWS profile, or IAM role) needs:
 
 - `s3:PutObject` and `s3:GetObject` on your bucket (and prefix if you use one)
 - `rekognition:DetectLabels`
+- `rekognition:DetectModerationLabels`
 - `bedrock:InvokeModel` for the model configured in `BEDROCK_MODEL_ID`
 
 ## Notes
