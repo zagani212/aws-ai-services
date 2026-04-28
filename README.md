@@ -1,4 +1,4 @@
-# AI Product Advisor
+# AWS AI Services
 
 Three AWS-powered services in one small Next.js app:
 
